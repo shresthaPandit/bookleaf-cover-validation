@@ -1,0 +1,500 @@
+{
+  "name": "BookLeaf Cover Validation",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "triggerOn": "specificFolder",
+        "folderToWatch": {
+          "__rl": true,
+          "value": "YOUR_GOOGLE_DRIVE_FOLDER_ID",
+          "mode": "id"
+        },
+        "event": "fileCreated",
+        "options": {}
+      },
+      "id": "4ab15038-aaee-48dd-be73-cf3f6cfaebbe",
+      "name": "Watch Incoming Covers",
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [176, 2432],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract ISBN and file type from filename\n// Expected format: 9781234567890_text.pdf or 9781234567890_text.png\nconst fileName = $json.name || '';\nconst match = fileName.match(/^(\\d{13})_text\\.(pdf|png)$/i);\n\nif (!match) {\n  throw new Error(`Invalid filename format: \"${fileName}\". Expected: {13-digit-ISBN}_text.pdf or .png`);\n}\n\nreturn [{\n  json: {\n    isbn: match[1],\n    fileType: match[2].toLowerCase(),\n    fileId: $json.id,\n    fileName: fileName,\n    fileUrl: `https://drive.google.com/file/d/${$json.id}/view`\n  }\n}];"
+      },
+      "id": "532c3420-5b34-40b6-8c07-2e1d78770823",
+      "name": "Extract ISBN",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [416, 2432]
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.fileId }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "a31ab8bf-10ca-41a9-9faf-d73e215031c7",
+      "name": "Download File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [656, 2432],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-1",
+              "leftValue": "={{ $('Extract ISBN').item.json.fileType }}",
+              "rightValue": "pdf",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4ca3293b-6c05-4d26-97c3-ac0be9379971",
+      "name": "Check File Type",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [896, 2432]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.cloudconvert.com/v2/jobs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_CLOUDCONVERT_API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"tasks\": {\n    \"upload-pdf\": {\n      \"operation\": \"import/base64\",\n      \"file\": \"{{ $binary.data.data }}\",\n      \"filename\": \"{{ $('Extract ISBN').item.json.fileName }}\"\n    },\n    \"convert-pdf\": {\n      \"operation\": \"convert\",\n      \"input\": \"upload-pdf\",\n      \"output_format\": \"png\",\n      \"pages\": \"1\",\n      \"pixel_density\": 300\n    },\n    \"export-png\": {\n      \"operation\": \"export/url\",\n      \"input\": \"convert-pdf\"\n    }\n  }\n}",
+        "options": {}
+      },
+      "id": "26fe8f7f-a983-435a-b0a9-0b9157dd1ed5",
+      "name": "PDF to PNG (CloudConvert)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1136, 2288],
+      "notes": "OPTIONAL: Only needed for PDF covers. Sign up free at cloudconvert.com (25 conversions/day). Replace YOUR_CLOUDCONVERT_API_KEY with your key."
+    },
+    {
+      "parameters": {
+        "url": "=https://api.cloudconvert.com/v2/jobs/{{ $json.data.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_CLOUDCONVERT_API_KEY"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "b6042cf0-0fdc-48dc-996e-4ccd2ca55620",
+      "name": "Get Converted PNG URL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1376, 2288]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.data.tasks.find(t => t.operation === 'export/url')?.result?.files?.[0]?.url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "ccb8c78f-0562-4d77-9002-0918910ea3cd",
+      "name": "Download Converted PNG",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1616, 2288]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pass through PNG binary data — merge point for PDF and PNG paths\nconst items = $input.all();\nreturn items.map(item => ({\n  json: {\n    isbn: $('Extract ISBN').item.json.isbn,\n    fileType: $('Extract ISBN').item.json.fileType,\n    fileId: $('Extract ISBN').item.json.fileId,\n    fileName: $('Extract ISBN').item.json.fileName,\n    fileUrl: $('Extract ISBN').item.json.fileUrl\n  },\n  binary: item.binary\n}));"
+      },
+      "id": "93eb0753-5524-4f4f-9174-71e5a506fe33",
+      "name": "Prepare Image Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1136, 2560]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst binaryKey = Object.keys(item.binary || {})[0];\n\nif (!binaryKey) {\n  throw new Error('No binary data found.');\n}\n\nconst binaryData = item.binary[binaryKey];\nconst base64 = binaryData.data;\nconst mimeType = binaryData.mimeType || 'image/png';\n\nreturn [{\n  json: {\n    ...item.json,\n    base64Image: base64,\n    mimeType: mimeType,\n    dataUri: `data:${mimeType};base64,${base64}`\n  }\n}];"
+      },
+      "id": "578fc775-852f-4888-a26a-1ab92995e42c",
+      "name": "Convert to Base64",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1376, 2560]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.ocr.space/parse/image",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "YOUR_OCR_SPACE_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "base64Image",
+              "value": "={{ $json.dataUri }}"
+            },
+            {
+              "name": "isOverlayRequired",
+              "value": "true"
+            },
+            {
+              "name": "OCREngine",
+              "value": "2"
+            },
+            {
+              "name": "scale",
+              "value": "true"
+            },
+            {
+              "name": "detectOrientation",
+              "value": "true"
+            },
+            {
+              "name": "filetype",
+              "value": "PNG"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "c1815281-6120-4881-bc0f-c793079eafb6",
+      "name": "OCR Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1584, 2560],
+      "notes": "Free OCR via ocr.space — 25,000 requests/month free tier. Get your key at ocr.space/ocrapi"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Analyze OCR bounding box data to detect badge zone violations\n// Badge zone = bottom 5% of front cover height (~9mm at 300 DPI standard)\nconst result = $input.first().json;\nconst isbn = $('Convert to Base64').item.json.isbn;\nconst fileUrl = $('Convert to Base64').item.json.fileUrl;\n\n// Handle OCR errors\nif (result.IsErroredOnProcessing || !result.ParsedResults?.length) {\n  const errMsg = result.ErrorMessage?.[0] || 'OCR processing failed';\n  return [{\n    json: {\n      isbn,\n      fileUrl,\n      status: 'REVIEW_NEEDED',\n      confidence: 0,\n      badge_area_clear: false,\n      author_name_detected: '',\n      issues_json: JSON.stringify([{\n        type: 'quality_issue',\n        severity: 'warning',\n        description: 'OCR failed: ' + errMsg,\n        correction: 'Ensure the image is a clear PNG/PDF at min 300 DPI and under 1MB file size'\n      }]),\n      correction_instructions: '1. [WARNING] quality_issue: OCR failed: ' + errMsg + ' → Fix: Ensure image is clear PNG/PDF, min 300 DPI, under 1MB'\n    }\n  }];\n}\n\nconst lines = result.ParsedResults[0]?.TextOverlay?.Lines || [];\n\n// Collect all words with pixel bounding boxes\nconst allWords = [];\nfor (const line of lines) {\n  for (const word of (line.Words || [])) {\n    const text = (word.WordText || '').trim();\n    if (!text) continue;\n    allWords.push({\n      text,\n      top: parseFloat(word.Top) || 0,\n      bottom: (parseFloat(word.Top) || 0) + (parseFloat(word.Height) || 0),\n      left: parseFloat(word.Left) || 0,\n      right: (parseFloat(word.Left) || 0) + (parseFloat(word.Width) || 0)\n    });\n  }\n}\n\nif (!allWords.length) {\n  return [{\n    json: {\n      isbn,\n      fileUrl,\n      status: 'REVIEW_NEEDED',\n      confidence: 50,\n      badge_area_clear: false,\n      author_name_detected: '',\n      issues_json: JSON.stringify([{\n        type: 'quality_issue',\n        severity: 'warning',\n        description: 'No text detected in image',\n        correction: 'Ensure the cover has readable text and is not too small or blurry'\n      }]),\n      correction_instructions: '1. [WARNING] quality_issue: No text detected → Fix: Ensure cover has readable text'\n    }\n  }];\n}\n\n// Estimate full image dimensions from outermost word positions\nconst totalWidth = Math.max(...allWords.map(w => w.right));\nconst totalHeight = Math.max(...allWords.map(w => w.bottom));\n\n// If width > height it is a spread — analyse right half (front cover) only\nconst isSpread = totalWidth > totalHeight;\nconst frontCoverMinLeft = isSpread ? totalWidth * 0.5 : 0;\n\nlet frontWords = allWords.filter(w => w.right > frontCoverMinLeft);\nif (!frontWords.length) frontWords = allWords;\n\n// Front cover dimensions\nconst fcHeight = Math.max(...frontWords.map(w => w.bottom));\nconst fcWidth = isSpread ? totalWidth / 2 : totalWidth;\n\n// Badge zone threshold — bottom 5% of cover height\nconst badgeZoneTop = fcHeight * 0.95;\n\n// Words inside badge zone\nconst badgeWords = frontWords.filter(w => w.bottom > badgeZoneTop);\n\n// Award phrase — the ONLY text permitted in the badge zone\nconst awardPhrase = 'winner of the 21st century emily dickinson award';\nconst awardWordSet = new Set(awardPhrase.split(' '));\n\n// Violations = words in badge zone that are NOT part of the award phrase\nconst violations = badgeWords.filter(w => {\n  const clean = w.text.toLowerCase().replace(/[^a-z0-9]/g, '');\n  return clean.length > 1 && !awardWordSet.has(clean);\n});\n\n// Margin check — text within 2% of cover edges (~3mm at standard cover size)\nconst marginPx = fcWidth * 0.02;\nconst leftEdge = frontCoverMinLeft + marginPx;\nconst rightEdge = frontCoverMinLeft + fcWidth - marginPx;\nconst topEdge = marginPx;\n\nconst marginViolations = frontWords.filter(w =>\n  w.bottom < badgeZoneTop &&\n  (w.left < leftEdge || w.right > rightEdge || w.top < topEdge)\n);\n\n// Build issues array\nconst issues = [];\n\nif (violations.length > 0) {\n  const violText = violations.map(w => w.text).join(' ');\n  issues.push({\n    type: 'badge_overlap',\n    severity: 'critical',\n    description: 'Text \"' + violText + '\" found in Award Badge Zone (bottom 5% of cover). Only the award badge text is permitted here.',\n    correction: 'Move this text above the badge zone. The bottom strip must contain only the award badge text.'\n  });\n}\n\nif (marginViolations.length > 0) {\n  issues.push({\n    type: 'margin_violation',\n    severity: 'warning',\n    description: 'Text detected within 3mm of the cover edge',\n    correction: 'Ensure all text has at least 3mm clearance from all four cover edges'\n  });\n}\n\nconst hasCritical = issues.some(i => i.severity === 'critical');\nconst status = hasCritical ? 'REVIEW_NEEDED' : 'PASS';\nconst confidence = hasCritical ? 75 : 95;\n\nconst correctionLines = issues.map(\n  (i, idx) => (idx + 1) + '. [' + i.severity.toUpperCase() + '] ' + i.type + ': ' + i.description + ' → Fix: ' + i.correction\n).join('\\n');\n\nreturn [{\n  json: {\n    isbn,\n    fileUrl,\n    status,\n    confidence,\n    badge_area_clear: violations.length === 0,\n    author_name_detected: violations.map(w => w.text).join(' '),\n    issues_json: JSON.stringify(issues),\n    correction_instructions: correctionLines || 'No issues found.',\n    raw_ocr_text: (result.ParsedResults[0]?.ParsedText || '').substring(0, 500)\n  }\n}];"
+      },
+      "id": "cccf8702-2cc0-4336-9d60-6b1de8851397",
+      "name": "Analyze OCR Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1856, 2560]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "value": "YOUR_AIRTABLE_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Authors",
+          "mode": "name"
+        },
+        "filterByFormula": "={ISBN}=\"{{ $json.isbn }}\"",
+        "options": {
+          "fields": [
+            "ISBN",
+            "Author_Name",
+            "Author_Email",
+            "Book_Title"
+          ]
+        }
+      },
+      "id": "9a3d20e5-de3e-4dc1-add2-149de75dd4a8",
+      "name": "Lookup Author",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2096, 2560],
+      "credentials": {
+        "airtableTokenApi": {
+          "name": "Airtable Personal Access Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge validation results with author data from Airtable\nconst validationData = $('Analyze OCR Results').item.json;\nconst authorName = $input.first().json.Author_Name || validationData.author_name_detected || 'Unknown Author';\nconst authorEmail = $input.first().json.Author_Email || null;\nconst bookTitle = $input.first().json.Book_Title || 'Your Book';\n\nreturn [{\n  json: {\n    ...validationData,\n    author_name: authorName,\n    author_email: authorEmail,\n    book_title: bookTitle,\n    has_author_email: !!authorEmail\n  }\n}];"
+      },
+      "id": "6d2707b8-25b1-40e1-826a-69d3d27d9515",
+      "name": "Merge Author Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2336, 2560]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "value": "YOUR_AIRTABLE_BASE_ID",
+          "mode": "id"
+        },
+        "table": {
+          "__rl": true,
+          "value": "Book_Cover_Validations",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ISBN": "={{ $json.isbn }}",
+            "Book_Title": "={{ $json.book_title }}",
+            "Author_Name": "={{ $json.author_name }}",
+            "Status": "={{ $json.status }}",
+            "Confidence_Score": "={{ $json.confidence }}",
+            "Badge_Overlap": "={{ !$json.badge_area_clear }}",
+            "Issues_JSON": "={{ $json.issues_json }}",
+            "Correction_Instructions": "={{ $json.correction_instructions }}",
+            "File_URL": "={{ $json.fileUrl }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "9e435fb9-d437-4cd2-917a-673b9e28e98e",
+      "name": "Create Airtable Record",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2560, 2560],
+      "credentials": {
+        "airtableTokenApi": {
+          "name": "Airtable Personal Access Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.Status }}",
+                    "rightValue": "PASS",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "82370a00-38f7-46be-a167-e473133d732b"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "PASS"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.Status }}",
+                    "rightValue": "REVIEW_NEEDED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "0499da5a-47d2-4a31-a046-99ad8e8d219b"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "REVIEW_NEEDED"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "78d29347-8a97-430e-968e-72e53e359511",
+      "name": "Route by Status",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [2816, 2560]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Merge Author Data').item.json.author_email }}",
+        "subject": "=✅ Your Book Cover Has Been Approved - {{ $json.Book_Title }}",
+        "message": "=<html>\n<body style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;\">\n  <div style=\"background: #2c5f2e; color: white; padding: 20px; border-radius: 8px 8px 0 0;\">\n    <h1 style=\"margin:0;\">✅ Cover Approved!</h1>\n  </div>\n  <div style=\"background: #f9f9f9; padding: 24px; border: 1px solid #ddd; border-radius: 0 0 8px 8px;\">\n    <p>Dear <strong>{{ $json.Author_Name }}</strong>,</p>\n    <p>Great news! Your book cover for <strong>\"{{ $json.Book_Title }}\"</strong> (ISBN: <code>{{ $json.ISBN }}</code>) has <strong>passed</strong> our automated quality validation.</p>\n    <ul style=\"line-height: 2;\">\n      <li>✅ Badge area clear — no text in award zone</li>\n      <li>✅ Safe margins respected (3mm from all edges)</li>\n      <li>✅ Image quality approved</li>\n      <li>✅ Text legibility verified</li>\n    </ul>\n    <p style=\"background: #e8f5e9; padding: 12px; border-radius: 4px;\">Confidence Score: <strong>{{ $json.Confidence_Score }}%</strong></p>\n    <p>Your cover is now ready for the next stage of production. 🎉</p>\n    <hr style=\"border:none; border-top:1px solid #eee; margin: 20px 0;\">\n    <p style=\"color: #888; font-size: 12px;\">Best regards,<br><strong>BookLeaf Publishing Team</strong><br>Automated Cover Validation System</p>\n  </div>\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "686c10a3-bd2b-4942-9ba0-fa17b96874f2",
+      "name": "Send PASS Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [3056, 2384],
+      "credentials": {
+        "gmailOAuth2": {
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Merge Author Data').item.json.author_email }}",
+        "subject": "=⚠️ Action Required: Book Cover Revision Needed - {{ $json.Book_Title }}",
+        "message": "=<html>\n<body style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;\">\n  <div style=\"background: #c0392b; color: white; padding: 20px; border-radius: 8px 8px 0 0;\">\n    <h1 style=\"margin:0;\">⚠️ Revision Required</h1>\n  </div>\n  <div style=\"background: #f9f9f9; padding: 24px; border: 1px solid #ddd; border-radius: 0 0 8px 8px;\">\n    <p>Dear <strong>{{ $json.Author_Name }}</strong>,</p>\n    <p>Our automated system has detected issues with your book cover for <strong>\"{{ $json.Book_Title }}\"</strong> (ISBN: <code>{{ $json.ISBN }}</code>) that require correction before it can be approved.</p>\n    <div style=\"background: #fff3cd; border: 1px solid #ffc107; padding: 16px; border-radius: 4px; margin: 16px 0;\">\n      <strong>Issues Found:</strong>\n      <pre style=\"white-space: pre-wrap; font-family: Arial; font-size: 14px; margin: 8px 0 0 0;\">{{ $json.Correction_Instructions }}</pre>\n    </div>\n    <p><strong>Confidence Score:</strong> {{ $json.Confidence_Score }}%</p>\n    <div style=\"background: #e3f2fd; padding: 16px; border-radius: 4px;\">\n      <strong>Next Steps:</strong>\n      <ol>\n        <li>Review the issues listed above</li>\n        <li>Make the necessary corrections to your cover file</li>\n        <li>Resubmit to the same Google Drive folder</li>\n        <li>Use filename: <code>{{ $json.ISBN }}_text.pdf</code> (or .png)</li>\n      </ol>\n      <p><em>Expected resubmission: Within 48 hours</em></p>\n    </div>\n    <p>Need help? Contact: <a href=\"mailto:support@bookleafpub.com\">support@bookleafpub.com</a></p>\n    <hr style=\"border:none; border-top:1px solid #eee; margin: 20px 0;\">\n    <p style=\"color: #888; font-size: 12px;\">Best regards,<br><strong>BookLeaf Publishing Team</strong><br>Automated Cover Validation System</p>\n  </div>\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "1559209c-7c48-463e-a6b0-99e94f7f5ebd",
+      "name": "Send Review Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [3168, 2688],
+      "credentials": {
+        "gmailOAuth2": {
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Watch Incoming Covers": {
+      "main": [[{"node": "Extract ISBN", "type": "main", "index": 0}]]
+    },
+    "Extract ISBN": {
+      "main": [[{"node": "Download File", "type": "main", "index": 0}]]
+    },
+    "Download File": {
+      "main": [[{"node": "Check File Type", "type": "main", "index": 0}]]
+    },
+    "Check File Type": {
+      "main": [
+        [{"node": "PDF to PNG (CloudConvert)", "type": "main", "index": 0}],
+        [{"node": "Prepare Image Data", "type": "main", "index": 0}]
+      ]
+    },
+    "PDF to PNG (CloudConvert)": {
+      "main": [[{"node": "Get Converted PNG URL", "type": "main", "index": 0}]]
+    },
+    "Get Converted PNG URL": {
+      "main": [[{"node": "Download Converted PNG", "type": "main", "index": 0}]]
+    },
+    "Download Converted PNG": {
+      "main": [[{"node": "Convert to Base64", "type": "main", "index": 0}]]
+    },
+    "Prepare Image Data": {
+      "main": [[{"node": "Convert to Base64", "type": "main", "index": 0}]]
+    },
+    "Convert to Base64": {
+      "main": [[{"node": "OCR Image", "type": "main", "index": 0}]]
+    },
+    "OCR Image": {
+      "main": [[{"node": "Analyze OCR Results", "type": "main", "index": 0}]]
+    },
+    "Analyze OCR Results": {
+      "main": [[{"node": "Lookup Author", "type": "main", "index": 0}]]
+    },
+    "Lookup Author": {
+      "main": [[{"node": "Merge Author Data", "type": "main", "index": 0}]]
+    },
+    "Merge Author Data": {
+      "main": [[{"node": "Create Airtable Record", "type": "main", "index": 0}]]
+    },
+    "Create Airtable Record": {
+      "main": [[{"node": "Route by Status", "type": "main", "index": 0}]]
+    },
+    "Route by Status": {
+      "main": [
+        [{"node": "Send PASS Email", "type": "main", "index": 0}],
+        [{"node": "Send Review Email", "type": "main", "index": 0}]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "meta": {
+    "instanceId": "REPLACE_WITH_YOUR_N8N_INSTANCE_ID"
+  },
+  "tags": []
+}
